@@ -1,9 +1,11 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::exit,
 };
 
 #[derive(Parser, Debug)]
@@ -43,46 +45,43 @@ struct BookRecord {
     group: Option<String>,
 }
 
-fn find_book_by_id(
-    id: &str,
-    shamela_extracted_path: &PathBuf,
-) -> Result<Option<(String, Option<String>, Option<String>)>, Box<dyn std::error::Error>> {
+fn find_book_by_id(id: &str, shamela_extracted_path: &Path) -> Result<Option<BookRecord>> {
     let books_path = shamela_extracted_path.join("books.jsonl");
     let file = File::open(books_path)?;
     let reader = BufReader::new(file);
 
     for l in reader.lines() {
         let line = l?;
-        let record: BookRecord = serde_json::from_str(&line)?;
+        let record: BookRecord = serde_json::from_str(&line)
+            .with_context(|| "failed to deserialize book record".to_string())?;
         if record.id == id {
-            return Ok(Some((record.id, record.author, record.date)));
+            return Ok(Some(record));
         }
     }
 
-    return Ok(None);
+    Ok(None)
 }
 
 /// for now it returns the id
-fn search_for_book(
-    token: &str,
-    shamela_extracted_path: &PathBuf,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+fn search_for_book(token: &str, shamela_extracted_path: &Path) -> Result<Vec<BookRecord>> {
     let books_path = shamela_extracted_path.join("books.jsonl");
     let file = File::open(books_path)?;
     let reader = BufReader::new(file);
+
+    let mut results = Vec::new();
 
     for l in reader.lines() {
         let line = l?;
         if line.contains(token) {
             let record: BookRecord = serde_json::from_str(&line)?;
-            return Ok(Some(record.id));
+            results.push(record)
         }
     }
 
-    return Ok(None);
+    return Ok(results);
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let shamela_extraction_dir = PathBuf::from(args.extract_dir);
@@ -93,20 +92,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{file}.jsonl does not exist in {}",
                 shamela_extraction_dir.to_str().unwrap()
             );
+            exit(1);
         }
     });
 
     if let Some(id) = args.id {
-        let res = find_book_by_id(&id, &shamela_extraction_dir)?;
+        let res =
+            find_book_by_id(&id, &shamela_extraction_dir).context(format!("finding book: {id}"))?;
         println!("{res:#?}")
     }
 
     if let Some(cmd) = args.command {
         match cmd {
             Commands::Search { name } => {
-                if let Some(id) = search_for_book(&name, &shamela_extraction_dir)? {
-                    println!("found book: {id}");
-                }
+                search_for_book(&name, &shamela_extraction_dir)
+                    .context(format!("searching for book with token: {name}"))?
+                    .iter()
+                    .for_each(|r| println!("{r:#?}"));
             }
         }
     };
